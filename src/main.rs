@@ -1,7 +1,9 @@
+use std::convert::TryInto;
 use std::path::PathBuf;
 
 use clap::Parser;
 use futures_util::{future, stream, StreamExt};
+use indicatif::ProgressBar;
 use reqwest::Client;
 use serde::Deserialize;
 use tokio::io::AsyncWriteExt;
@@ -91,14 +93,33 @@ async fn download_file(
     download_url: reqwest::Url,
     destination: PathBuf,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut file = tokio::fs::File::create(destination).await?;
-    let mut res = client.get(download_url).send().await?;
+    let metadata = tokio::fs::metadata(destination.clone()).await;
+    match metadata {
+        // Exit early if file already exists.
+        Ok(metadata) => {
+            if metadata.is_file() {
+                Ok(())
+            } else {
+                Err(Box::new(Error::new("Found existing directory")))
+            }
+        }
+        Err(e) => match e.kind() {
+            std::io::ErrorKind::NotFound => {
+                let mut file = tokio::fs::File::create(destination).await?;
+                let mut res = client.get(download_url).send().await?;
 
-    while let Some(chunk) = res.chunk().await?.as_deref() {
-        file.write_all(chunk).await?
+                while let Some(chunk) = res.chunk().await?.as_deref() {
+                    file.write_all(chunk).await?
+                }
+
+                Ok(())
+            }
+            std::io::ErrorKind::PermissionDenied => Err(Box::new(Error::new(
+                "Permission denied when retrieving file metadata",
+            ))),
+            _ => Err(Box::new(Error::new("Unable to retrieve file metadata"))),
+        },
     }
-
-    Ok(())
 }
 
 #[tokio::main]
@@ -120,12 +141,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
 
     if let Some(data) = response.data {
-        println!("Downloading album {}: {}", data.id, data.title);
+        println!("Album {}: {}", data.id, data.title);
 
-        let length = data.images.len();
-        println!("Number of files: {}", length);
+        let size = data.images.len();
+        println!("Number of files: {}", size);
 
-        if length == 0 {
+        if size == 0 {
             return Ok(());
         }
 
@@ -142,7 +163,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         prepare_directory(destination.clone()).await?;
 
         let width = {
-            let mut width = length as i32;
+            let mut width = size as i32;
             let mut count = 0;
             while width > 0 {
                 width /= 10;
@@ -168,6 +189,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Ok((url, filename))
             });
 
+        let pb = ProgressBar::new(size.try_into().unwrap());
+
         stream::iter(media)
             .map(|result| async {
                 let result: Result<(), Box<dyn std::error::Error>> = match result {
@@ -186,8 +209,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 result
             })
             .buffer_unordered(parallelism)
-            .for_each(|_| future::ready(()))
+            .for_each(|_| {
+                pb.inc(1);
+                future::ready(())
+            })
             .await;
+
+        pb.finish_with_message("Completed!");
 
         Ok(())
     } else {
