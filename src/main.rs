@@ -176,10 +176,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .images
             .iter()
             .enumerate()
-            .map(|(i, media)| -> Result<_, String> {
+            .map(|(index, media)| -> Result<_, String> {
                 let filename = format!(
                     "{:0>width$} - {}.{}",
-                    i,
+                    index + 1,
                     media.id,
                     get_media_type(&media.content_type),
                     width = width
