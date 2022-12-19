@@ -200,10 +200,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .iter()
             .enumerate()
             .map(|(index, media)| -> Result<_, String> {
+                let title = media
+                    .title
+                    .as_ref()
+                    .map(|title| format!(" - {}", title))
+                    .unwrap_or("".to_string());
+                let description = media
+                    .description
+                    .as_ref()
+                    .map(|description| format!(" - {}", description))
+                    .unwrap_or("".to_string());
                 let filename = format!(
-                    "{:0>width$} - {}.{}",
+                    "{:0>width$} - {}{}{}.{}",
                     index + 1,
                     media.id,
+                    title,
+                    description,
                     get_media_type(&media.content_type),
                     width = width
                 );
