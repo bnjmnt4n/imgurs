@@ -108,7 +108,7 @@ async fn prepare_directory(path: PathBuf) -> Result<(), Box<dyn std::error::Erro
 async fn download_file(
     client: &Client,
     download_url: reqwest::Url,
-    destination: PathBuf,
+    destination: &PathBuf,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let metadata = tokio::fs::metadata(destination.clone()).await;
     match metadata {
@@ -122,7 +122,6 @@ async fn download_file(
         }
         Err(e) => match e.kind() {
             std::io::ErrorKind::NotFound => {
-                // TODO: save as temp file and rename.
                 let mut file = tokio::fs::File::create(destination).await?;
                 let mut res = client.get(download_url).send().await?;
 
@@ -219,9 +218,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     get_media_type(&media.content_type),
                     width = width
                 );
+                let temp_filename = format!("~!{}", filename);
                 let url = reqwest::Url::parse(&media.link).map_err(|_| media.link.to_owned())?;
 
-                Ok((url, filename))
+                Ok((url, filename, temp_filename))
             });
 
         let pb = ProgressBar::new(num_files.try_into().unwrap());
@@ -230,9 +230,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         stream::iter(media)
             .map(|result| async {
                 let result: Result<(), Box<dyn std::error::Error>> = match result {
-                    Ok((url, filename)) => {
+                    Ok((url, filename, temp_filename)) => {
+                        let temp_path = destination.join(temp_filename);
                         let path = destination.join(filename);
-                        download_file(&client, url, path).await
+
+                        match download_file(&client, url, &temp_path).await {
+                            Ok(ok) => {
+                                tokio::fs::rename(temp_path, path)
+                                    .await
+                                    .map_err(|_| Box::new(Error::new("Unable to move temporary file")))?;
+                                Ok(ok)
+                            }
+                            Err(err) => {
+                                // TODO: log error?
+                                let _success = tokio::fs::remove_file(temp_path).await.is_ok();
+                                Err(err)
+                            }
+                        }
                     }
                     Err(link) => {
                         println!("Failed to parse URL {}", link);
