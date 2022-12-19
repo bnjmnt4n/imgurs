@@ -107,35 +107,40 @@ async fn prepare_directory(path: PathBuf) -> Result<(), Box<dyn std::error::Erro
 
 async fn download_file(
     client: &Client,
-    download_url: reqwest::Url,
+    download_url: String,
     destination: &PathBuf,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let download_url = reqwest::Url::parse(&download_url).map_err(|_| {
+        Box::new(Error::new(&format!(
+            "Failed to parse URL: {}",
+            download_url
+        )))
+    })?;
     let metadata = tokio::fs::metadata(destination.clone()).await;
-    match metadata {
-        // Exit early if file already exists.
-        Ok(metadata) => {
-            if metadata.is_file() {
-                Ok(())
-            } else {
-                Err(Box::new(Error::new("Found existing directory")))
+
+    // Exit early if destination already exists.
+    if metadata.is_ok() {
+        return if metadata.unwrap().is_file() {
+            Ok(())
+        } else {
+            Err(Box::new(Error::new("Found existing directory")))
+        };
+    }
+
+    match metadata.unwrap_err().kind() {
+        std::io::ErrorKind::NotFound => {
+            let mut file = tokio::fs::File::create(destination).await?;
+            let mut res = client.get(download_url).send().await?;
+            while let Some(chunk) = res.chunk().await?.as_deref() {
+                file.write_all(chunk).await?
             }
+
+            Ok(())
         }
-        Err(e) => match e.kind() {
-            std::io::ErrorKind::NotFound => {
-                let mut file = tokio::fs::File::create(destination).await?;
-                let mut res = client.get(download_url).send().await?;
-
-                while let Some(chunk) = res.chunk().await?.as_deref() {
-                    file.write_all(chunk).await?
-                }
-
-                Ok(())
-            }
-            std::io::ErrorKind::PermissionDenied => Err(Box::new(Error::new(
-                "Permission denied when retrieving file metadata",
-            ))),
-            _ => Err(Box::new(Error::new("Unable to retrieve file metadata"))),
-        },
+        std::io::ErrorKind::PermissionDenied => Err(Box::new(Error::new(
+            "Permission denied when retrieving file metadata",
+        ))),
+        _ => Err(Box::new(Error::new("Unable to retrieve file metadata"))),
     }
 }
 
@@ -194,72 +199,62 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             count
         };
 
-        let media = data
-            .images
-            .iter()
-            .enumerate()
-            .map(|(index, media)| -> Result<_, String> {
-                let title = media
-                    .title
-                    .as_ref()
-                    .map(|title| format!(" - {}", title))
-                    .unwrap_or("".to_string());
-                let description = media
-                    .description
-                    .as_ref()
-                    .map(|description| format!(" - {}", description))
-                    .unwrap_or("".to_string());
-                let filename = format!(
-                    "{:0>width$} - {}{}{}.{}",
-                    index + 1,
-                    media.id,
-                    title,
-                    description,
-                    get_media_type(&media.content_type),
-                    width = width
-                );
-                let temp_filename = format!("~!{}", filename);
-                let url = reqwest::Url::parse(&media.link).map_err(|_| media.link.to_owned())?;
+        let media = data.images.iter().enumerate().map(|(index, media)| {
+            let title = media
+                .title
+                .as_ref()
+                .map(|title| format!(" - {}", title))
+                .unwrap_or("".to_string());
+            let description = media
+                .description
+                .as_ref()
+                .map(|description| format!(" - {}", description))
+                .unwrap_or("".to_string());
+            let filename = format!(
+                "{:0>width$} - {}{}{}.{}",
+                index + 1,
+                media.id,
+                title,
+                description,
+                get_media_type(&media.content_type),
+                width = width
+            );
+            let temp_filename = format!("~!{}", filename);
+            let url = media.link.clone();
 
-                Ok((url, filename, temp_filename))
-            });
+            (url, filename, temp_filename)
+        });
 
         let pb = ProgressBar::new(num_files.try_into().unwrap());
 
         // TODO: collect errors.
         stream::iter(media)
-            .map(|result| async {
-                let result: Result<(), Box<dyn std::error::Error>> = match result {
-                    Ok((url, filename, temp_filename)) => {
-                        let temp_path = destination.join(temp_filename);
-                        let path = destination.join(filename);
+            .map(|(url, filename, temp_filename)| async {
+                let temp_path = destination.join(temp_filename);
+                let path = destination.join(filename);
 
-                        match download_file(&client, url, &temp_path).await {
-                            Ok(ok) => {
-                                tokio::fs::rename(temp_path, path)
-                                    .await
-                                    .map_err(|_| Box::new(Error::new("Unable to move temporary file")))?;
-                                Ok(ok)
-                            }
-                            Err(err) => {
-                                // TODO: log error?
-                                let _success = tokio::fs::remove_file(temp_path).await.is_ok();
-                                Err(err)
-                            }
+                let result: Result<(), Box<dyn std::error::Error>> =
+                    match download_file(&client, url, &temp_path).await {
+                        Ok(ok) => {
+                            tokio::fs::rename(temp_path, path).await.map_err(|_| {
+                                Box::new(Error::new("Unable to move temporary file"))
+                            })?;
+                            Ok(ok)
                         }
-                    }
-                    Err(link) => {
-                        println!("Failed to parse URL {}", link);
-                        Err(Box::new(Error::new(&format!(
-                            "Failed to parse URL: {}",
-                            link
-                        ))))
-                    }
-                };
+                        Err(err) => {
+                            // TODO: log error?
+                            let _success = tokio::fs::remove_file(temp_path).await.is_ok();
+                            Err(err)
+                        }
+                    };
+
                 result
             })
             .buffer_unordered(args.parallelism)
-            .for_each(|_| {
+            .for_each(|result| {
+                if let Err(error) = result {
+                    println!("Error occured: {}", error);
+                }
                 pb.inc(1);
                 future::ready(())
             })
