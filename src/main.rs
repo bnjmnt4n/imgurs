@@ -1,6 +1,6 @@
-use std::convert::TryInto;
 use std::path::PathBuf;
 
+use anyhow::{anyhow, Context, Result};
 use clap::{ArgGroup, Parser};
 use futures_util::{future, stream, StreamExt};
 use humansize::{format_size, DECIMAL};
@@ -8,24 +8,6 @@ use indicatif::ProgressBar;
 use reqwest::Client;
 use serde::Deserialize;
 use tokio::io::AsyncWriteExt;
-
-#[derive(Debug)]
-struct Error {
-    message: String,
-}
-impl Error {
-    fn new(message: &str) -> Error {
-        Error {
-            message: message.to_owned(),
-        }
-    }
-}
-impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
-        write!(f, "{}", self.message)
-    }
-}
-impl std::error::Error for Error {}
 
 #[derive(Parser)]
 #[command(group(
@@ -84,7 +66,7 @@ fn get_media_type(content_type: &str) -> &str {
     }
 }
 
-async fn prepare_directory(path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+async fn prepare_directory(path: PathBuf) -> Result<()> {
     let metadata = tokio::fs::metadata(path.clone()).await;
     if let Err(e) = metadata {
         match e.kind() {
@@ -92,30 +74,21 @@ async fn prepare_directory(path: PathBuf) -> Result<(), Box<dyn std::error::Erro
                 tokio::fs::create_dir_all(path).await?;
                 Ok(())
             }
-            // TODO: fix box usage?
-            std::io::ErrorKind::PermissionDenied => Err(Box::new(Error::new(
-                "Permission denied when retrieving file metadata",
-            ))),
-            _ => Err(Box::new(Error::new("Unable to retrieve file metadata"))),
+            std::io::ErrorKind::PermissionDenied => {
+                Err(e).with_context(|| "Permission denied when retrieving file metadata")
+            }
+            _ => Err(e).with_context(|| "Unable to retrieve file metadata"),
         }
     } else if metadata.unwrap().is_file() {
-        Err(Box::new(Error::new("Destination is a file")))
+        Err(anyhow!("Destination is a file"))
     } else {
         Ok(())
     }
 }
 
-async fn download_file(
-    client: &Client,
-    download_url: String,
-    destination: &PathBuf,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let download_url = reqwest::Url::parse(&download_url).map_err(|_| {
-        Box::new(Error::new(&format!(
-            "Failed to parse URL: {}",
-            download_url
-        )))
-    })?;
+async fn download_file(client: &Client, download_url: String, destination: &PathBuf) -> Result<()> {
+    let download_url = reqwest::Url::parse(&download_url)
+        .with_context(|| format!("Failed to parse URL: {}", download_url))?;
     let metadata = tokio::fs::metadata(destination.clone()).await;
 
     // Exit early if destination already exists.
@@ -123,7 +96,7 @@ async fn download_file(
         return if metadata.unwrap().is_file() {
             Ok(())
         } else {
-            Err(Box::new(Error::new("Found existing directory")))
+            Err(anyhow!("Found existing directory"))
         };
     }
 
@@ -137,10 +110,10 @@ async fn download_file(
 
             Ok(())
         }
-        std::io::ErrorKind::PermissionDenied => Err(Box::new(Error::new(
-            "Permission denied when retrieving file metadata",
-        ))),
-        _ => Err(Box::new(Error::new("Unable to retrieve file metadata"))),
+        std::io::ErrorKind::PermissionDenied => {
+            Err(anyhow!("Permission denied when retrieving file metadata",))
+        }
+        _ => Err(anyhow!("Unable to retrieve file metadata")),
     }
 }
 
@@ -233,20 +206,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let temp_path = destination.join(temp_filename);
                 let path = destination.join(filename);
 
-                let result: Result<(), Box<dyn std::error::Error>> =
-                    match download_file(&client, url, &temp_path).await {
-                        Ok(ok) => {
-                            tokio::fs::rename(temp_path, path).await.map_err(|_| {
-                                Box::new(Error::new("Unable to move temporary file"))
-                            })?;
-                            Ok(ok)
-                        }
-                        Err(err) => {
-                            // TODO: log error?
-                            let _success = tokio::fs::remove_file(temp_path).await.is_ok();
-                            Err(err)
-                        }
-                    };
+                let result: Result<()> = match download_file(&client, url, &temp_path).await {
+                    Ok(ok) => {
+                        tokio::fs::rename(temp_path, path)
+                            .await
+                            .with_context(|| "Unable to move temporary file")?;
+                        Ok(ok)
+                    }
+                    Err(err) => {
+                        // TODO: log error?
+                        let _success = tokio::fs::remove_file(temp_path).await.is_ok();
+                        Err(err)
+                    }
+                };
 
                 result
             })
