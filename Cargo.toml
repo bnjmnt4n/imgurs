@@ -8,6 +8,7 @@ edition = "2021"
 [dependencies]
 clap = { version = "4.0", features = ["derive"] }
 futures-util = "0.3"
+humansize = "2.1.2"
 indicatif = "0.17"
 reqwest = { version = "0.11", features = ["json"] }
 serde = { version = "1.0", features = ["derive"] }

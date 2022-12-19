@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 use clap::{ArgGroup, Parser};
 use futures_util::{future, stream, StreamExt};
+use humansize::{format_size, DECIMAL};
 use indicatif::ProgressBar;
 use reqwest::Client;
 use serde::Deserialize;
@@ -51,7 +52,7 @@ struct Cli {
 #[derive(Debug, Deserialize)]
 struct ImgurResponse<T> {
     data: Option<T>,
-    status: i64,
+    status: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -69,6 +70,7 @@ struct ImgurMedia {
     #[allow(unused)]
     description: Option<String>,
     link: String,
+    size: u64,
     #[serde(rename = "type")]
     content_type: String,
 }
@@ -160,10 +162,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let title = data.title.unwrap_or_else(|| data.id);
         println!("Album: {}", title);
 
-        let size = data.images.len();
-        println!("Number of files: {}", size);
+        let num_files = data.images.len();
+        println!("Number of files: {}", num_files);
 
-        if is_display_details_only || size == 0 {
+        let album_size: u64 = data.images.iter().map(|image| image.size).sum();
+        println!("Total size: {}", format_size(album_size, DECIMAL));
+
+        if is_display_details_only || num_files == 0 {
             return Ok(());
         }
 
@@ -181,7 +186,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         prepare_directory(destination.clone()).await?;
 
         let width = {
-            let mut width = size as i32;
+            let mut width = num_files as i32;
             let mut count = 0;
             while width > 0 {
                 width /= 10;
@@ -207,7 +212,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Ok((url, filename))
             });
 
-        let pb = ProgressBar::new(size.try_into().unwrap());
+        let pb = ProgressBar::new(num_files.try_into().unwrap());
 
         // TODO: collect errors.
         stream::iter(media)
