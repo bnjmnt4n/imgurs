@@ -1,7 +1,7 @@
 use std::convert::TryInto;
 use std::path::PathBuf;
 
-use clap::Parser;
+use clap::{ArgGroup, Parser};
 use futures_util::{future, stream, StreamExt};
 use indicatif::ProgressBar;
 use reqwest::Client;
@@ -27,10 +27,24 @@ impl std::fmt::Display for Error {
 impl std::error::Error for Error {}
 
 #[derive(Parser)]
+#[command(group(
+            ArgGroup::new("op")
+                .args(["output", "details"]),
+))]
 struct Cli {
+    /// ID of album to download.
     album_id: String,
-    destination: Option<PathBuf>,
-    parallelism: Option<usize>,
+    /// Output directory. Album will be downloaded to "$output/$album_name".
+    #[arg(short, long)]
+    output: Option<PathBuf>,
+    /// Prints the album's details without downloading.
+    #[arg(short, long)]
+    details: bool,
+    /// Number of files to download in parallel.
+    #[arg(short, long, default_value_t = 8)]
+    parallelism: usize,
+    /// Imgur client ID for accessing the API. Default: $IMGUR_CLIENT_ID
+    #[arg(short, long)]
     imgur_client_id: Option<String>,
 }
 
@@ -43,14 +57,16 @@ struct ImgurResponse<T> {
 #[derive(Debug, Deserialize)]
 struct ImgurAlbum {
     id: String,
-    title: String,
+    title: Option<String>,
     images: Vec<ImgurMedia>,
 }
 
 #[derive(Debug, Deserialize)]
 struct ImgurMedia {
     id: String,
+    #[allow(unused)]
     title: Option<String>,
+    #[allow(unused)]
     description: Option<String>,
     link: String,
     #[serde(rename = "type")]
@@ -69,19 +85,18 @@ fn get_media_type(content_type: &str) -> &str {
 async fn prepare_directory(path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     let metadata = tokio::fs::metadata(path.clone()).await;
     if let Err(e) = metadata {
-        return match e.kind() {
+        match e.kind() {
             std::io::ErrorKind::NotFound => {
                 tokio::fs::create_dir_all(path).await?;
                 Ok(())
             }
+            // TODO: fix box usage?
             std::io::ErrorKind::PermissionDenied => Err(Box::new(Error::new(
                 "Permission denied when retrieving file metadata",
             ))),
             _ => Err(Box::new(Error::new("Unable to retrieve file metadata"))),
-        };
-    }
-
-    if metadata.unwrap().is_file() {
+        }
+    } else if metadata.unwrap().is_file() {
         Err(Box::new(Error::new("Destination is a file")))
     } else {
         Ok(())
@@ -105,6 +120,7 @@ async fn download_file(
         }
         Err(e) => match e.kind() {
             std::io::ErrorKind::NotFound => {
+                // TODO: save as temp file and rename.
                 let mut file = tokio::fs::File::create(destination).await?;
                 let mut res = client.get(download_url).send().await?;
 
@@ -129,8 +145,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client_id = args
         .imgur_client_id
         .unwrap_or_else(|| std::env::var("IMGUR_CLIENT_ID").unwrap_or_else(|_| "".to_owned()));
-    let parallelism = args.parallelism.unwrap_or(8);
     let client = Client::builder().build()?;
+    let is_display_details_only = args.details;
 
     let response = client
         .get(format!("https://api.imgur.com/3/album/{}", args.album_id))
@@ -141,22 +157,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
 
     if let Some(data) = response.data {
-        println!("Album {}: {}", data.id, data.title);
+        let title = data.title.unwrap_or_else(|| data.id);
+        println!("Album: {}", title);
 
         let size = data.images.len();
         println!("Number of files: {}", size);
 
-        if size == 0 {
+        if is_display_details_only || size == 0 {
             return Ok(());
         }
 
-        let destination = args.destination.unwrap_or_else(|| {
+        let destination = args.output.unwrap_or_else(|| {
             PathBuf::from(
-                data.title
+                title
                     .clone()
+                    .replace(" : ", " - ")
+                    .replace(": ", " - ")
                     .replace(":", "-")
-                    .replace("/", "-")
-                    .replace(".", "-"),
+                    .replace("/", "-"),
             )
         });
 
@@ -191,6 +209,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let pb = ProgressBar::new(size.try_into().unwrap());
 
+        // TODO: collect errors.
         stream::iter(media)
             .map(|result| async {
                 let result: Result<(), Box<dyn std::error::Error>> = match result {
@@ -208,7 +227,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 };
                 result
             })
-            .buffer_unordered(parallelism)
+            .buffer_unordered(args.parallelism)
             .for_each(|_| {
                 pb.inc(1);
                 future::ready(())
@@ -219,7 +238,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         Ok(())
     } else {
-        println!("Failed to download with status code: {}", response.status);
+        println!(
+            "Failed to get album details with status code: {}",
+            response.status
+        );
 
         Ok(())
     }
