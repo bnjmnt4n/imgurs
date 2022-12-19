@@ -1,10 +1,11 @@
+use std::fmt::Write;
 use std::path::PathBuf;
 
 use anyhow::{anyhow, Context, Result};
 use clap::{ArgGroup, Parser};
-use futures_util::{future, stream, StreamExt};
+use futures_util::{stream, StreamExt};
 use humansize::{format_size, DECIMAL};
-use indicatif::ProgressBar;
+use indicatif::{MultiProgress, ProgressBar, ProgressState, ProgressStyle};
 use reqwest::Client;
 use serde::Deserialize;
 use tokio::io::AsyncWriteExt;
@@ -86,7 +87,13 @@ async fn prepare_directory(path: PathBuf) -> Result<()> {
     }
 }
 
-async fn download_file(client: &Client, download_url: String, destination: &PathBuf) -> Result<()> {
+async fn download_file(
+    client: &Client,
+    pb: &ProgressBar,
+    download_url: String,
+    destination: &PathBuf,
+    temp_destination: &PathBuf,
+) -> Result<()> {
     let download_url = reqwest::Url::parse(&download_url)
         .with_context(|| format!("Failed to parse URL: {}", download_url))?;
     let metadata = tokio::fs::metadata(destination.clone()).await;
@@ -102,11 +109,18 @@ async fn download_file(client: &Client, download_url: String, destination: &Path
 
     match metadata.unwrap_err().kind() {
         std::io::ErrorKind::NotFound => {
-            let mut file = tokio::fs::File::create(destination).await?;
+            // Download file.
+            let mut file = tokio::fs::File::create(temp_destination).await?;
             let mut res = client.get(download_url).send().await?;
             while let Some(chunk) = res.chunk().await?.as_deref() {
+                pb.inc(chunk.len() as u64);
                 file.write_all(chunk).await?
             }
+
+            // Rename file.
+            tokio::fs::rename(temp_destination, destination)
+                .await
+                .with_context(|| "Unable to move temporary file")?;
 
             Ok(())
         }
@@ -192,47 +206,59 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 get_media_type(&media.content_type),
                 width = width
             );
-            let temp_filename = format!("~!{}", filename);
             let url = media.link.clone();
 
-            (url, filename, temp_filename)
+            (url, media.size, filename)
         });
 
-        let pb = ProgressBar::new(num_files.try_into().unwrap());
+        let m = MultiProgress::new();
+        let sty = ProgressStyle::with_template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} {msg}")
+        .unwrap()
+        .with_key("eta", |state: &ProgressState, w: &mut dyn Write| write!(w, "{:.1}s", state.eta().as_secs_f64()).unwrap())
+        .progress_chars("#>-");
 
-        // TODO: collect errors.
-        stream::iter(media)
-            .map(|(url, filename, temp_filename)| async {
-                let temp_path = destination.join(temp_filename);
-                let path = destination.join(filename);
+        let errors = stream::iter(media)
+            .map(|(url, download_size, filename)| {
+                let pb = m.clone().add(ProgressBar::new(download_size));
+                pb.set_style(sty.clone());
+                pb.set_message(filename.clone());
+                let temp_filename = format!("~!{}", filename);
 
-                let result: Result<()> = match download_file(&client, url, &temp_path).await {
-                    Ok(ok) => {
-                        tokio::fs::rename(temp_path, path)
-                            .await
-                            .with_context(|| "Unable to move temporary file")?;
-                        Ok(ok)
-                    }
-                    Err(err) => {
+                async {
+                    let pb = pb;
+                    let filename = filename;
+                    let temp_path = destination.join(temp_filename);
+                    let path = destination.join(filename.clone());
+
+                    let result = download_file(&client, &pb, url, &path, &temp_path).await;
+                    if result.is_err() {
                         // TODO: log error?
                         let _success = tokio::fs::remove_file(temp_path).await.is_ok();
-                        Err(err)
+                    } else {
+                        pb.finish_and_clear();
                     }
-                };
 
-                result
+                    result.with_context(|| format!("Error downloading file {}", filename))
+                }
             })
             .buffer_unordered(args.parallelism)
-            .for_each(|result| {
-                if let Err(error) = result {
-                    println!("Error occured: {}", error);
+            .filter_map(|result| async {
+                match result {
+                    Ok(_) => None,
+                    Err(err) => Some(err)
                 }
-                pb.inc(1);
-                future::ready(())
             })
+            .collect::<Vec<_>>()
             .await;
 
-        pb.finish_with_message("Completed!");
+        println!(
+            "Downloaded {}/{} files.\n",
+            num_files - errors.len(),
+            num_files
+        );
+        for error in errors {
+            println!("{:?}\n", error);
+        }
 
         Ok(())
     } else {
