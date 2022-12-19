@@ -58,6 +58,15 @@ struct ImgurMedia {
     content_type: String,
 }
 
+const IMGUR_ALBUM_URL_PREFIX: &str = "https://imgur.com/a/";
+fn get_album_id(album_id: &str) -> &str {
+    if album_id.starts_with(IMGUR_ALBUM_URL_PREFIX) {
+        &album_id[IMGUR_ALBUM_URL_PREFIX.len()..]
+    } else {
+        album_id
+    }
+}
+
 fn get_media_type(content_type: &str) -> &str {
     let (_, content_type) = content_type.split_once("/").unwrap_or(("", "unknown"));
     if content_type == "jpeg" {
@@ -140,9 +149,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|| std::env::var("IMGUR_CLIENT_ID").unwrap_or_else(|_| "".to_owned()));
     let client = Client::builder().build()?;
     let is_display_details_only = args.details;
+    let album_id = get_album_id(&args.album_id);
 
     let response = client
-        .get(format!("https://api.imgur.com/3/album/{}", args.album_id))
+        .get(format!("https://api.imgur.com/3/album/{}", album_id))
         .header("Authorization", format!("Client-ID {}", client_id))
         .send()
         .await?
@@ -167,6 +177,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             PathBuf::from(
                 title
                     .clone()
+                    .replace("\n", " ")
                     .replace(" : ", " - ")
                     .replace(": ", " - ")
                     .replace(":", "-")
@@ -245,7 +256,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .filter_map(|result| async {
                 match result {
                     Ok(_) => None,
-                    Err(err) => Some(err)
+                    Err(err) => Some(err),
                 }
             })
             .collect::<Vec<_>>()
