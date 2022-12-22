@@ -1,11 +1,10 @@
-use std::fmt::Write;
 use std::path::PathBuf;
 
 use anyhow::{anyhow, Context, Result};
 use clap::{ArgGroup, Parser};
 use futures_util::{stream, StreamExt};
 use humansize::{format_size, DECIMAL};
-use indicatif::{MultiProgress, ProgressBar, ProgressState, ProgressStyle};
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use reqwest::Client;
 use serde::Deserialize;
 use tokio::io::AsyncWriteExt;
@@ -225,7 +224,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let m = MultiProgress::new();
         let sty = ProgressStyle::with_template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} {msg}")
         .unwrap()
-        .with_key("eta", |state: &ProgressState, w: &mut dyn Write| write!(w, "{:.1}s", state.eta().as_secs_f64()).unwrap())
         .progress_chars("#>-");
 
         let errors = stream::iter(media)
