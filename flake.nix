@@ -1,6 +1,6 @@
 {
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs?rev=a115bb9bd56831941be3776c8a94005867f316a7";
+    nixpkgs.url = "github:NixOS/nixpkgs?rev=04f574a1c0fde90b51bf68198e2297ca4e7cccf4";
     flake-utils.url = "github:numtide/flake-utils?rev=5aed5285a952e0b949eb3ba02c12fa4fcfef535f";
     naersk.url = "github:nmattia/naersk";
     mozillapkgs = {
@@ -16,9 +16,8 @@
 
         mozilla = pkgs.callPackage (mozillapkgs + "/package-set.nix") { };
         rust-channel = mozilla.rustChannelOf {
-          # date = "2021-05-20";
-          channel = "stable";
-          sha256 = "DzNEaW724O8/B8844tt5AVHmSjSQ3cmzlU4BP90oRlY=";
+          channel = "1.66.0";
+          sha256 = "sha256-S7epLlflwt0d1GZP44u5Xosgf6dRrmr8xxC+Ml2Pq7c=";
         };
         rust = rust-channel.rust;
         rust-src = rust-channel.rust-src;
@@ -33,7 +32,7 @@
       in
       rec {
         packages.package = naersk-lib.buildPackage {
-          pname = "package";
+          pname = "imgurs";
           root = ./.;
           inherit nativeBuildInputs buildInputs;
         };
