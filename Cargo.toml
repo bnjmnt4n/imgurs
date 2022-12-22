@@ -8,6 +8,7 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0"
 clap = { version = "4.0", features = ["derive"] }
+filetime = "0.2"
 futures-util = "0.3"
 humansize = "2.1"
 indicatif = "0.17"

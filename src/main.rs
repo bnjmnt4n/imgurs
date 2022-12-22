@@ -47,11 +47,10 @@ struct ImgurAlbum {
 #[derive(Debug, Deserialize)]
 struct ImgurMedia {
     id: String,
-    #[allow(unused)]
     title: Option<String>,
-    #[allow(unused)]
     description: Option<String>,
     link: String,
+    datetime: i64,
     size: u64,
     #[serde(rename = "type")]
     content_type: String,
@@ -99,6 +98,7 @@ async fn download_file(
     client: &Client,
     pb: &ProgressBar,
     download_url: String,
+    time_since_epoch: i64,
     destination: &PathBuf,
     temp_destination: &PathBuf,
 ) -> Result<()> {
@@ -129,6 +129,12 @@ async fn download_file(
             tokio::fs::rename(temp_destination, destination)
                 .await
                 .with_context(|| "Unable to move temporary file")?;
+
+            filetime::set_file_mtime(
+                destination,
+                filetime::FileTime::from_unix_time(time_since_epoch, 0),
+            )
+            .with_context(|| "Could not set file modified time")?;
 
             Ok(())
         }
@@ -218,7 +224,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
             let url = media.link.clone();
 
-            (url, media.size, filename)
+            (url, media.size, filename, media.datetime)
         });
 
         let m = MultiProgress::new();
@@ -227,19 +233,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .progress_chars("#>-");
 
         let errors = stream::iter(media)
-            .map(|(url, download_size, filename)| {
+            .map(|(url, download_size, filename, time_since_epoch)| {
                 let pb = m.clone().add(ProgressBar::new(download_size));
                 pb.set_style(sty.clone());
                 pb.set_message(filename.clone());
                 let temp_filename = format!("~!{}", filename);
 
-                async {
-                    let pb = pb;
-                    let filename = filename;
+                let client = client.clone();
+                let destination = destination.clone();
+                let time_since_epoch = time_since_epoch.clone();
+
+                async move {
                     let temp_path = destination.join(temp_filename);
                     let path = destination.join(filename.clone());
 
-                    let result = download_file(&client, &pb, url, &path, &temp_path).await;
+                    let result =
+                        download_file(&client, &pb, url, time_since_epoch, &path, &temp_path).await;
                     if result.is_err() {
                         // TODO: log error?
                         let _success = tokio::fs::remove_file(temp_path).await.is_ok();
