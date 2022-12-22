@@ -31,17 +31,17 @@
         buildInputs = [ ];
       in
       rec {
-        packages.package = naersk-lib.buildPackage {
+        packages.imgurs = naersk-lib.buildPackage {
           pname = "imgurs";
           root = ./.;
           inherit nativeBuildInputs buildInputs;
         };
-        defaultPackage = packages.package;
+        defaultPackage = packages.imgurs;
 
-        apps.package = flake-utils.lib.mkApp {
-          drv = packages.package;
+        apps.imgurs = flake-utils.lib.mkApp {
+          drv = packages.imgurs;
         };
-        defaultApp = apps.package;
+        defaultApp = apps.imgurs;
 
         devShell = pkgs.mkShell {
           inherit nativeBuildInputs;
