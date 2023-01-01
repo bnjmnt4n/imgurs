@@ -2,55 +2,58 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs?rev=04f574a1c0fde90b51bf68198e2297ca4e7cccf4";
     flake-utils.url = "github:numtide/flake-utils?rev=5aed5285a952e0b949eb3ba02c12fa4fcfef535f";
-    naersk.url = "github:nmattia/naersk";
-    mozillapkgs = {
-      url = "github:mozilla/nixpkgs-mozilla";
-      flake = false;
+    crane = {
+      url = "github:ipetkov/crane";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    rust-overlay = {
+      url = "github:oxalica/rust-overlay";
+      inputs = {
+        nixpkgs.follows = "nixpkgs";
+        flake-utils.follows = "flake-utils";
+      };
     };
   };
 
-  outputs = { self, nixpkgs, flake-utils, naersk, mozillapkgs }:
+  outputs = { self, nixpkgs, flake-utils, crane, rust-overlay }:
     flake-utils.lib.eachDefaultSystem (system:
       let
-        pkgs = nixpkgs.legacyPackages."${system}";
-
-        mozilla = pkgs.callPackage (mozillapkgs + "/package-set.nix") { };
-        rust-channel = mozilla.rustChannelOf {
-          channel = "1.66.0";
-          sha256 = "sha256-S7epLlflwt0d1GZP44u5Xosgf6dRrmr8xxC+Ml2Pq7c=";
-        };
-        rust = rust-channel.rust;
-        rust-src = rust-channel.rust-src;
-
-        naersk-lib = naersk.lib."${system}".override {
-          cargo = rust;
-          rustc = rust;
+        pkgs = import nixpkgs {
+          inherit system;
+          overlays = [ (import rust-overlay) ];
         };
 
-        nativeBuildInputs = with pkgs; [ openssl pkg-config ];
+        rust = pkgs.rust-bin.stable.latest.default.override {
+          extensions = [ "rust-src" "rustfmt" ];
+        };
+
+        craneLib = (crane.mkLib pkgs).overrideToolchain rust;
+
+        nativeBuildInputs = [ pkgs.openssl pkgs.pkg-config ];
         buildInputs = [ ];
-      in
-      rec {
-        packages.imgurs = naersk-lib.buildPackage {
-          pname = "imgurs";
-          root = ./.;
+
+        imgurs = craneLib.buildPackage {
+          src = craneLib.cleanCargoSource ./.;
+
           inherit nativeBuildInputs buildInputs;
         };
-        defaultPackage = packages.imgurs;
 
-        apps.imgurs = flake-utils.lib.mkApp {
-          drv = packages.imgurs;
+      in
+      rec {
+        packages.default = imgurs;
+
+        apps.default = flake-utils.lib.mkApp {
+          drv = imgurs;
         };
-        defaultApp = apps.imgurs;
 
         devShell = pkgs.mkShell {
-          inherit nativeBuildInputs;
+          inputsFrom = [ imgurs ];
+
           buildInputs = [
             rust
             pkgs.rust-analyzer
-            pkgs.rustfmt
-          ] ++ buildInputs;
-          RUST_SRC_PATH = "${rust-src}/lib/rustlib/src/rust/library";
+          ];
+
           RUST_LOG = "info";
           RUST_BACKTRACE = 1;
           LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath buildInputs;
