@@ -58,11 +58,9 @@ struct ImgurMedia {
 
 const IMGUR_ALBUM_URL_PREFIX: &str = "https://imgur.com/a/";
 fn get_album_id(album_id: &str) -> &str {
-    if album_id.starts_with(IMGUR_ALBUM_URL_PREFIX) {
-        &album_id[IMGUR_ALBUM_URL_PREFIX.len()..]
-    } else {
-        album_id
-    }
+    album_id
+        .strip_prefix(IMGUR_ALBUM_URL_PREFIX)
+        .unwrap_or(album_id)
 }
 
 fn get_media_type(content_type: &str) -> &str {
